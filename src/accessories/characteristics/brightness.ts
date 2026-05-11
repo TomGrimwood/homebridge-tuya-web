@@ -85,45 +85,56 @@ export class BrightnessCharacteristic extends TuyaWebCharacteristic {
   }
 
   updateValue(data: DeviceState, callback?: CharacteristicGetCallback): void {
-    const tuyaValue = Number(
-      this.usesColorBrightness ? data.color?.brightness : data.brightness,
-    );
-    const homekitValue = this.rangeMapper.tuyaToHomekit(tuyaValue);
+    const rawValue = this.usesColorBrightness
+      ? data.color?.brightness
+      : data.brightness;
+
+    if (rawValue === undefined || rawValue === null || rawValue === "") {
+      this.debug(
+        "No brightness field in device data; skipping update. %s",
+        inspect(data),
+      );
+      callback && callback(null, BrightnessCharacteristic.DEFAULT_VALUE);
+      return;
+    }
+
+    const tuyaValue = Number(rawValue);
+    if (!Number.isFinite(tuyaValue)) {
+      this.warn(
+        "Brightness value is not a number (%s); skipping update.",
+        inspect(rawValue),
+      );
+      callback && callback(null, BrightnessCharacteristic.DEFAULT_VALUE);
+      return;
+    }
+
+    let homekitValue = this.rangeMapper.tuyaToHomekit(tuyaValue);
 
     if (homekitValue > 100) {
       this.warn(
         "Characteristic 'Brightness' will receive value higher than allowed (%s) since provided Tuya value (%s) " +
-          "exceeds configured maximum Tuya value (%s). Please update your configuration!",
+          "exceeds configured maximum Tuya value (%s). Clamping to 100.",
         homekitValue,
         tuyaValue,
         this.rangeMapper.tuyaEnd,
       );
+      homekitValue = 100;
     } else if (homekitValue < 0) {
       this.warn(
         "Characteristic 'Brightness' will receive value lower than allowed (%s) since provided Tuya value (%s) " +
-          "is lower than configured minimum Tuya value (%s). Please update your configuration!",
+          "is lower than configured minimum Tuya value (%s). Clamping to 0.",
         homekitValue,
         tuyaValue,
         this.rangeMapper.tuyaStart,
       );
+      homekitValue = 0;
     }
 
-    if (homekitValue) {
-      this.accessory.setCharacteristic(
-        this.homekitCharacteristic,
-        homekitValue,
-        !callback,
-      );
-      callback && callback(null, homekitValue);
-      return;
-    }
-
-    const error = new Error(
-      `Tried to set brightness but failed to parse data. \n ${inspect(data)}`,
+    this.accessory.setCharacteristic(
+      this.homekitCharacteristic,
+      homekitValue,
+      !callback,
     );
-
-    this.error(error.message);
-
-    callback && callback(error);
+    callback && callback(null, homekitValue);
   }
 }
