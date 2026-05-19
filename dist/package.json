@@ -1,0 +1,68 @@
+{
+    "displayName": "TuyaWebPlatform",
+    "name": "homebridge-tuya-web-smartlife",
+    "version": "1.1.5-smartlife.1",
+    "description": "Homebridge plugin for Tuya/Smart Life devices using the Smart Life device sharing API (fork of @milo526/homebridge-tuya-web with Smart Life QR-code auth)",
+    "main": "dist/src/index.js",
+    "scripts": {
+        "build": "rimraf ./dist && tsc",
+        "lint": "eslint **/src/**/*.ts",
+        "prepare": "npm run build",
+        "prepublishOnly": "npm run lint && npm run build",
+        "prettier": "prettier --check .",
+        "release": "np",
+        "test": "ts-mocha test/**/*.spec.ts",
+        "watch": "npm run build && npm link && nodemon",
+        "clear-cache": "rimraf ~/.homebridge/accessories/cachedAccessories && rimraf ~/.homebridge/persist/*"
+    },
+    "keywords": [
+        "homebridge",
+        "homebridge-plugin",
+        "tuya",
+        "smartlife",
+        "tuyawebplatform",
+        "tuyaweb"
+    ],
+    "author": "Milo Cesar <milocesar1@gmail.com>",
+    "license": "MIT",
+    "publishConfig": {
+        "access": "public"
+    },
+    "engines": {
+        "node": ">=12.22.7",
+        "homebridge": ">=1.0.0"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/milo526/homebridge-tuya-web"
+    },
+    "bugs": {
+        "url": "https://github.com/milo526/homebridge-tuya-web/issues"
+    },
+    "dependencies": {
+        "axios": "^1.13.6",
+        "lodash.debounce": "^4.0.8",
+        "qrcode": "^1.5.4"
+    },
+    "devDependencies": {
+        "@types/lodash.debounce": "^4.0.7",
+        "@types/mocha": "^10.0.2",
+        "@types/node": "^16.11.12",
+        "@types/qrcode": "^1.5.6",
+        "@typescript-eslint/eslint-plugin": "^6.7.4",
+        "@typescript-eslint/parser": "^6.7.4",
+        "chai": "^4.3.7",
+        "eslint": "^8.50.0",
+        "eslint-config-prettier": "^9.0.0",
+        "homebridge": "^1.3.8",
+        "mocha": "^10.2.0",
+        "nodemon": "^3.0.1",
+        "np": "^8.0.4",
+        "prettier": "^3.0.3",
+        "rimraf": "^5.0.5",
+        "ts-mocha": "^10.0.0",
+        "ts-node": "^10.9.1",
+        "ts-xor": "^1.3.0",
+        "typescript": "^5.2.2"
+    }
+}

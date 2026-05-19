@@ -1,5 +1,6 @@
-# Ignore compiled code
-dist
+# Compiled code is committed on this release branch so that
+# `npm install <git-url>` works without a build step.
+# dist
 # ------------- Defaults ------------- #
 # Logs
 logs

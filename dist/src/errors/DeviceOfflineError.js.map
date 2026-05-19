@@ -1,0 +1,1 @@
+{"version":3,"file":"DeviceOfflineError.js","sourceRoot":"","sources":["../../../src/errors/DeviceOfflineError.ts"],"names":[],"mappings":";;;AAAA,MAAa,kBAAmB,SAAQ,KAAK;IAC3C,YAAY,eAAwB;QAClC,IAAI,OAAO,GAAG,gBAAgB,CAAC;QAC/B,IAAI,eAAe,EAAE;YACnB,OAAO,GAAG,GAAG,OAAO,MAAM,eAAe,EAAE,CAAC;SAC7C;QACD,KAAK,CAAC,OAAO,CAAC,CAAC;IACjB,CAAC;CACF;AARD,gDAQC"}
