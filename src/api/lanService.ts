@@ -26,6 +26,14 @@ import { LanDeviceConfig } from "../config";
 
 const DEFAULT_PROTOCOL_VERSION = "3.3";
 const CONNECT_TIMEOUT_MS = 5_000;
+/** How long to coalesce rapid SETs (slider drag → many fine-grained updates). */
+const SET_COALESCE_MS = 60;
+/** Min interval between SET commands actually sent to the device. */
+const MIN_SET_INTERVAL_MS = 80;
+/** Backoff schedule for reconnects (ms). After the last entry we keep using it. */
+const RECONNECT_BACKOFF_MS = [500, 1_000, 2_000, 5_000, 10_000, 30_000];
+/** How long the cached state remains valid for HomeKit GET while disconnected. */
+const STALE_STATE_GRACE_MS = 60_000;
 
 /**
  * Default DPS number → instruction-code mappings, by device type. The
@@ -100,11 +108,26 @@ interface LanConnection {
   tuya: InstanceType<typeof TuyAPI>;
   /** Last state pushed from the device. */
   lastState?: DeviceState;
-  /** Last `set` payload — used to merge into our cached state if device echo is slow. */
-  pendingDps?: Record<string, unknown>;
+  /** Last time we received any data from the device (epoch ms). */
+  lastStateAt: number;
+
   /** Promise resolving to ready-to-use (connected) TuyAPI instance. */
-  connected?: Promise<void>;
+  connecting?: Promise<void>;
+  reconnectAttempts: number;
   reconnectTimer?: NodeJS.Timeout;
+  closing?: boolean;
+
+  /** Merged pending DPS values waiting to be flushed to the device. */
+  pendingSet: Record<string, unknown>;
+  pendingFlushTimer?: NodeJS.Timeout;
+  /** Promise that resolves once the pending batch has been sent. */
+  flushPromise?: Promise<void>;
+  /** Resolver for the current pending batch. */
+  flushResolve?: () => void;
+  flushReject?: (err: unknown) => void;
+  /** Serializes actual TuyAPI .set() calls so we don't hammer the device. */
+  setInFlight: Promise<void>;
+  lastSetAt: number;
 }
 
 export class LanTuyaWebApi {
@@ -115,48 +138,89 @@ export class LanTuyaWebApi {
     private readonly log?: Logger,
   ) {
     for (const dev of devices) {
-      const tuya = new TuyAPI({
-        id: dev.id,
-        key: dev.local_key,
-        ip: dev.ip,
-        version: dev.version ?? DEFAULT_PROTOCOL_VERSION,
-        issueGetOnConnect: true,
-        nullPayloadOnJSONError: true,
-      });
-
-      const connection: LanConnection = { config: dev, tuya };
-
-      tuya.on("connected", () => {
-        this.log?.info("[%s] LAN connected (%s)", dev.name ?? dev.id, dev.ip);
-      });
-      tuya.on("disconnected", () => {
-        this.log?.warn(
-          "[%s] LAN disconnected; will reconnect on next request",
-          dev.name ?? dev.id,
-        );
-        connection.connected = undefined;
-      });
-      tuya.on("error", (err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.log?.debug("[%s] LAN error: %s", dev.name ?? dev.id, msg);
-      });
-      tuya.on("data", (data: { dps?: Record<string, unknown> }) => {
-        if (data?.dps) {
-          connection.lastState = this.translateDpsToDeviceState(
-            data.dps,
-            dev,
-            connection.lastState,
-          );
-          this.log?.debug(
-            "[%s] LAN state push: %s",
-            dev.name ?? dev.id,
-            JSON.stringify(data.dps),
-          );
-        }
-      });
-
+      const connection = this.createConnection(dev);
       this.connections.set(dev.id, connection);
+      // Kick off initial connect immediately so the device is ready by the
+      // time HomeKit asks for state.
+      void this.ensureConnected(dev.id).catch(() => {
+        /* error already logged */
+      });
     }
+  }
+
+  private createConnection(dev: LanDeviceConfig): LanConnection {
+    const tuya = new TuyAPI({
+      id: dev.id,
+      key: dev.local_key,
+      ip: dev.ip,
+      version: dev.version ?? DEFAULT_PROTOCOL_VERSION,
+      issueGetOnConnect: true,
+      nullPayloadOnJSONError: true,
+    });
+
+    const connection: LanConnection = {
+      config: dev,
+      tuya,
+      lastStateAt: 0,
+      reconnectAttempts: 0,
+      pendingSet: {},
+      setInFlight: Promise.resolve(),
+      lastSetAt: 0,
+    };
+
+    tuya.on("connected", () => {
+      connection.reconnectAttempts = 0;
+      this.log?.info("[%s] LAN connected (%s)", dev.name ?? dev.id, dev.ip);
+    });
+
+    tuya.on("disconnected", () => {
+      if (connection.closing) {return;}
+      this.log?.warn(
+        "[%s] LAN disconnected; auto-reconnecting in background",
+        dev.name ?? dev.id,
+      );
+      connection.connecting = undefined;
+      this.scheduleReconnect(connection);
+    });
+
+    tuya.on("error", (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log?.debug("[%s] LAN error: %s", dev.name ?? dev.id, msg);
+    });
+
+    tuya.on("data", (data: { dps?: Record<string, unknown> }) => {
+      if (data?.dps) {
+        connection.lastState = this.translateDpsToDeviceState(
+          data.dps,
+          dev,
+          connection.lastState,
+        );
+        connection.lastStateAt = Date.now();
+        this.log?.debug(
+          "[%s] LAN state push: %s",
+          dev.name ?? dev.id,
+          JSON.stringify(data.dps),
+        );
+      }
+    });
+
+    return connection;
+  }
+
+  private scheduleReconnect(connection: LanConnection): void {
+    if (connection.reconnectTimer !== undefined || connection.closing) {return;}
+    const idx = Math.min(
+      connection.reconnectAttempts,
+      RECONNECT_BACKOFF_MS.length - 1,
+    );
+    const delay = RECONNECT_BACKOFF_MS[idx];
+    connection.reconnectAttempts += 1;
+    connection.reconnectTimer = setTimeout(() => {
+      connection.reconnectTimer = undefined;
+      void this.ensureConnected(connection.config.id).catch(() => {
+        /* will reschedule via disconnected event */
+      });
+    }, delay);
   }
 
   /**
@@ -228,9 +292,32 @@ export class LanTuyaWebApi {
     if (!conn) {
       throw new Error(`Unknown device ${deviceId}`);
     }
+
+    // Fast path: if we already have a recent cached state, return it
+    // without waiting for a fresh round-trip. HomeKit fires GET on
+    // every characteristic in parallel; previously each one would race
+    // to reconnect and overflow the device with simultaneous requests.
+    if (
+      conn.lastState !== undefined &&
+      Date.now() - conn.lastStateAt < STALE_STATE_GRACE_MS
+    ) {
+      conn.lastState.online = true;
+      return conn.lastState;
+    }
+
     try {
       await this.ensureConnected(deviceId);
     } catch (e) {
+      // Connection failed AND cache is stale → reply with last-known
+      // state if we have any, so HomeKit doesn't spam "No Response".
+      if (conn.lastState) {
+        const stale = { ...conn.lastState, online: true };
+        this.log?.debug(
+          "[%s] LAN unreachable; returning stale cached state",
+          deviceId,
+        );
+        return stale;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       this.log?.debug("[%s] LAN unreachable: %s", deviceId, msg);
       throw new DeviceOfflineError();
@@ -250,6 +337,7 @@ export class LanTuyaWebApi {
         );
         state.online = true;
         conn.lastState = state;
+        conn.lastStateAt = Date.now();
         return state;
       }
     } catch (e) {
@@ -277,7 +365,6 @@ export class LanTuyaWebApi {
     );
 
     const dpsMap = this.codeToDpsMap(conn.config);
-    const multiDps: Record<string, unknown> = {};
     for (const { code, value } of commands) {
       const dp = dpsMap.get(code);
       if (dp === undefined) {
@@ -288,47 +375,100 @@ export class LanTuyaWebApi {
         );
         continue;
       }
-      multiDps[String(dp)] = value;
+      // Merge into pending — later writes to the same DP overwrite
+      // earlier ones, which is exactly what we want for slider drags.
+      conn.pendingSet[String(dp)] = value;
     }
 
-    if (Object.keys(multiDps).length === 0) {
-      this.log?.warn(
-        "[%s] No DPS commands resolved for method %s",
-        conn.config.name ?? deviceId,
-        method,
-      );
+    if (Object.keys(conn.pendingSet).length === 0) {
       return;
     }
 
-    try {
-      await this.ensureConnected(deviceId);
-      this.log?.debug(
-        "[%s] LAN set %s",
-        conn.config.name ?? deviceId,
-        JSON.stringify(multiDps),
-      );
-      // TuyAPI's TS types require value to be string|number|boolean, but in
-      // practice it accepts any JSON-serializable payload (and our DP map
-      // can contain JSON-stringified objects for colour_data). Cast through
-      // unknown to avoid the false-positive type error.
-      await conn.tuya.set({
-        multiple: true,
-        data: multiDps as unknown as Record<string, string | number | boolean>,
+    // Optimistically update the cached state so the next GET reflects
+    // the user's intent even before the device has applied the change.
+    conn.lastState = this.translateDpsToDeviceState(
+      conn.pendingSet,
+      conn.config,
+      conn.lastState,
+    );
+    conn.lastStateAt = Date.now();
+
+    return this.scheduleFlush(conn);
+  }
+
+  /**
+   * Coalesce rapid SETs into a single TuyAPI .set() call. Returns a
+   * promise that resolves once *some* flush containing this set has
+   * been acknowledged by the device.
+   */
+  private scheduleFlush(conn: LanConnection): Promise<void> {
+    if (!conn.flushPromise) {
+      conn.flushPromise = new Promise<void>((resolve, reject) => {
+        conn.flushResolve = resolve;
+        conn.flushReject = reject;
       });
-      // Optimistically merge the just-sent values into our cached state so
-      // a subsequent getDeviceState() reflects the change immediately, even
-      // if the device hasn't pushed an updated status frame yet.
-      conn.lastState = this.translateDpsToDeviceState(
-        multiDps,
-        conn.config,
-        conn.lastState,
-      );
+    }
+    if (conn.pendingFlushTimer) {
+      // already scheduled — just wait for it
+      return conn.flushPromise;
+    }
+    conn.pendingFlushTimer = setTimeout(() => {
+      conn.pendingFlushTimer = undefined;
+      void this.flushPending(conn);
+    }, SET_COALESCE_MS);
+    return conn.flushPromise;
+  }
+
+  private async flushPending(conn: LanConnection): Promise<void> {
+    const resolve = conn.flushResolve;
+    const reject = conn.flushReject;
+    const data = conn.pendingSet;
+    conn.pendingSet = {};
+    conn.flushPromise = undefined;
+    conn.flushResolve = undefined;
+    conn.flushReject = undefined;
+
+    if (Object.keys(data).length === 0) {
+      resolve?.();
+      return;
+    }
+
+    // Serialize through setInFlight so we don't pipeline multiple
+    // writes to the same TuyAPI socket (which is unhappy doing so).
+    conn.setInFlight = conn.setInFlight
+      .catch(() => undefined)
+      .then(async () => {
+        // Enforce a minimum interval between writes — without this,
+        // a back-to-back colour-temp + brightness flush can confuse
+        // some Tuya firmware and the bulb just drops the second one.
+        const elapsed = Date.now() - conn.lastSetAt;
+        if (elapsed < MIN_SET_INTERVAL_MS) {
+          await sleep(MIN_SET_INTERVAL_MS - elapsed);
+        }
+
+        await this.ensureConnected(conn.config.id);
+        this.log?.debug(
+          "[%s] LAN set %s",
+          conn.config.name ?? conn.config.id,
+          JSON.stringify(data),
+        );
+        await conn.tuya.set({
+          multiple: true,
+          data: data as unknown as Record<string, string | number | boolean>,
+        });
+        conn.lastSetAt = Date.now();
+      });
+
+    try {
+      await conn.setInFlight;
+      resolve?.();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/offline|timeout|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH/i.test(msg)) {
-        throw new DeviceOfflineError();
+        reject?.(new DeviceOfflineError());
+      } else {
+        reject?.(e);
       }
-      throw e;
     }
   }
 
@@ -351,20 +491,21 @@ export class LanTuyaWebApi {
     if (!conn) {throw new Error(`Unknown device ${deviceId}`);}
     if (conn.tuya.isConnected()) {return conn;}
 
-    if (!conn.connected) {
-      conn.connected = (async () => {
+    if (!conn.connecting) {
+      conn.connecting = (async () => {
         const ip = conn.config.ip;
         if (!ip) {
-          // No IP configured — try UDP discovery
           await conn.tuya.find({ timeout: CONNECT_TIMEOUT_MS / 1000 });
         }
         await conn.tuya.connect();
       })().catch((e: unknown) => {
-        conn.connected = undefined;
+        conn.connecting = undefined;
+        // Schedule next reconnect after a backoff, then re-throw.
+        this.scheduleReconnect(conn);
         throw e;
       });
     }
-    await conn.connected;
+    await conn.connecting;
     return conn;
   }
 
@@ -585,4 +726,8 @@ export class LanTuyaWebApi {
         return [];
     }
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

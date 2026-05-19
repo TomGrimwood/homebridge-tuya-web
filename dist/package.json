@@ -1,7 +1,7 @@
 {
     "displayName": "TuyaWebPlatform",
     "name": "homebridge-tuya-web-smartlife",
-    "version": "1.2.1-smartlife.1",
+    "version": "1.2.2-smartlife.1",
     "description": "Homebridge plugin for Tuya/Smart Life devices using the Smart Life device sharing API (fork of @milo526/homebridge-tuya-web with Smart Life QR-code auth)",
     "main": "dist/src/index.js",
     "bin": {
