@@ -36,8 +36,21 @@ This plugin implements the following features:
 ## Installation
 
 ```
-npm i -g @milo526/homebridge-tuya-web
+npm i -g homebridge-tuya-web-smartlife
 ```
+
+> **LAN-only mode (recommended).** This fork supports a `localOnly` mode that
+> never contacts Tuya's cloud at runtime. After a one-time cloud login to grab
+> each device's local_key you can isolate the devices from the internet at
+> your router and the plugin keeps working entirely on your LAN.
+>
+> ```bash
+> # Discover your devices & get a ready-to-paste Homebridge config snippet:
+> npx tuya-discover
+> ```
+>
+> Then enable **LAN-only mode** in the Homebridge UI settings and paste the
+> printed `devices` array, or edit `config.json` directly.
 
 ## Support
 
