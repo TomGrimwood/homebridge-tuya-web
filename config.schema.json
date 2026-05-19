@@ -19,18 +19,83 @@
         "type": "object",
         "required": true,
         "properties": {
+          "localOnly": {
+            "title": "LAN-only mode (no cloud access)",
+            "type": "boolean",
+            "default": false,
+            "description": "When enabled, the plugin will NOT contact any Tuya cloud service. Requires per-device local_key (16-char AES key) and IP, which must be obtained once via Tuya cloud or `tuya-cli wizard`. Strongly recommended for privacy / reliability — the Tuya account can be safely deleted once each device's local_key has been recorded."
+          },
           "userCode": {
-            "title": "User Code",
+            "title": "User Code (cloud mode only)",
             "type": "string",
-            "required": true,
-            "description": "Your Smart Life User Code. In the Smart Life app: Me → Settings → Account and Security → User Code."
+            "required": false,
+            "description": "Your Smart Life User Code (cloud mode only). In the Smart Life app: Me → Settings → Account and Security → User Code. Leave empty if localOnly is enabled."
           },
           "pollingInterval": {
             "title": "Polling Interval",
             "type": "number",
-            "description": "The frequency in seconds that the plugin polls the cloud to get device updates. Can be left empty to only fetch on request. Must be 600 or larger.",
+            "description": "The frequency in seconds that the plugin polls for device updates. Can be left empty to only fetch on request. In cloud mode, must be 600 or larger to avoid rate limits.",
             "required": false,
-            "minimum": 600
+            "minimum": 0
+          }
+        }
+      },
+      "devices": {
+        "title": "LAN Devices",
+        "description": "Required when LAN-only mode is enabled. One entry per device on your network.",
+        "type": "array",
+        "items": {
+          "title": "LAN device",
+          "type": "object",
+          "properties": {
+            "id": {
+              "title": "Device ID (virtual id)",
+              "type": "string",
+              "required": true,
+              "description": "Tuya virtual device id, e.g. eb119c7e19b2e1f2a6gdmp"
+            },
+            "local_key": {
+              "title": "Local Key",
+              "type": "string",
+              "required": true,
+              "description": "16-character AES key. Get it from the Tuya cloud or `tuya-cli wizard`."
+            },
+            "ip": {
+              "title": "Device IP",
+              "type": "string",
+              "required": false,
+              "description": "LAN IP of the device. Strongly recommended."
+            },
+            "name": {
+              "title": "Display name",
+              "type": "string",
+              "required": false
+            },
+            "version": {
+              "title": "Protocol version",
+              "type": "string",
+              "default": "3.3",
+              "required": false,
+              "description": "Tuya protocol version. 3.3 covers most devices; some newer firmware uses 3.4 or 3.5."
+            },
+            "device_type": {
+              "title": "Device type",
+              "type": "string",
+              "required": false,
+              "default": "light",
+              "oneOf": [
+                { "title": "Light", "enum": ["light"] },
+                { "title": "Dimmer", "enum": ["dimmer"] },
+                { "title": "Switch", "enum": ["switch"] },
+                { "title": "Outlet", "enum": ["outlet"] },
+                { "title": "Fan", "enum": ["fan"] },
+                { "title": "Cover", "enum": ["cover"] },
+                { "title": "Window", "enum": ["window"] },
+                { "title": "Garage Door", "enum": ["garage"] },
+                { "title": "Thermostat", "enum": ["climate"] },
+                { "title": "Temperature Sensor", "enum": ["temperature_sensor"] }
+              ]
+            }
           }
         }
       },
@@ -180,7 +245,31 @@
     }
   },
   "layout": [
-    "options.userCode",
+    "options.localOnly",
+    {
+      "key": "options.userCode",
+      "condition": { "functionBody": "return !model.options.localOnly" }
+    },
+    {
+      "type": "fieldset",
+      "title": "LAN Devices",
+      "expandable": true,
+      "expanded": true,
+      "condition": { "functionBody": "return model.options.localOnly" },
+      "items": [
+        {
+          "type": "array",
+          "items": [
+            { "key": "devices[].name" },
+            { "key": "devices[].id" },
+            { "key": "devices[].local_key" },
+            { "key": "devices[].ip" },
+            { "key": "devices[].device_type" },
+            { "key": "devices[].version" }
+          ]
+        }
+      ]
+    },
     {
       "type": "fieldset",
       "title": "Device Settings",

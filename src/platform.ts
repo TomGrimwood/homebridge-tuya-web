@@ -23,10 +23,18 @@ import { AuthenticationError } from "./errors";
 import { DeviceList } from "./helpers/DeviceList";
 import { TuyaDevice, TuyaDeviceType, TuyaDeviceTypes } from "./api/response";
 import { TuyaWebApi } from "./api/service";
+import { LanTuyaWebApi } from "./api/lanService";
 import { GarageDoorAccessory } from "./accessories/GarageDoorAccessory";
 import { TemperatureSensorAccessory } from "./accessories/TemperatureSensorAccessory";
 import { Cache } from "./helpers/cache";
 import { WindowAccessory } from "./accessories/WindowAccessory";
+
+/**
+ * Either backend exposes the same public surface used by the rest of
+ * the plugin. Structural typing means we don't need to formally declare
+ * an interface; this alias just documents the contract.
+ */
+export type TuyaApiBackend = TuyaWebApi | LanTuyaWebApi;
 
 export type HomebridgeAccessory = PlatformAccessory<
   Partial<{
@@ -46,7 +54,10 @@ export class TuyaWebPlatform implements DynamicPlatformPlugin {
 
   private readonly pollingInterval?: number;
 
-  public readonly tuyaWebApi!: TuyaWebApi;
+  public readonly tuyaWebApi!: TuyaApiBackend;
+
+  /** True when running in pure LAN mode (no cloud access). */
+  public readonly localOnly: boolean;
 
   private failedToInitAccessories = new Map<TuyaDeviceType, string[]>();
 
@@ -61,25 +72,51 @@ export class TuyaWebPlatform implements DynamicPlatformPlugin {
       this.log.info(
         "No options found in configuration file, disabling plugin.",
       );
+      this.localOnly = false;
       return;
     }
     const options = config.options;
-
-    if (options.userCode === undefined) {
-      this.log.error(
-        "Missing required config parameter: userCode. " +
-          "Get your User Code from the Smart Life app: Me → Profile → Get User Code.",
-      );
-      return;
-    }
-
+    this.localOnly = options.localOnly === true;
     this.pollingInterval = config.options.pollingInterval;
 
-    this.tuyaWebApi = new TuyaWebApi(
-      options.userCode,
-      api.user.storagePath(),
-      this.log,
-    );
+    if (this.localOnly) {
+      if (!Array.isArray(config.devices) || config.devices.length === 0) {
+        this.log.error(
+          "localOnly mode requires a non-empty `devices` array. " +
+            "Each entry needs id, local_key, ip, and optionally name + device_type.",
+        );
+        return;
+      }
+      const invalid = config.devices.filter(
+        (d) => !d?.id || !d?.local_key,
+      );
+      if (invalid.length > 0) {
+        this.log.error(
+          "Each `devices` entry must have id and local_key. Invalid entries: %s",
+          JSON.stringify(invalid),
+        );
+        return;
+      }
+      this.log.info(
+        "Starting in LAN-only mode (no cloud access). Managing %d device(s).",
+        config.devices.length,
+      );
+      this.tuyaWebApi = new LanTuyaWebApi(config.devices, this.log);
+    } else {
+      if (options.userCode === undefined) {
+        this.log.error(
+          "Missing required config parameter: userCode. " +
+            "Get your User Code from the Smart Life app: Me → Profile → Get User Code. " +
+            "Alternatively, enable `localOnly` and configure devices manually.",
+        );
+        return;
+      }
+      this.tuyaWebApi = new TuyaWebApi(
+        options.userCode,
+        api.user.storagePath(),
+        this.log,
+      );
+    }
 
     this.api.on("didFinishLaunching", () => {
       void this.postLaunchSetup.bind(this)();

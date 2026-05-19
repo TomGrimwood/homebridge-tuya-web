@@ -1,7 +1,7 @@
 {
   "displayName": "TuyaWebPlatform",
   "name": "homebridge-tuya-web-smartlife",
-  "version": "1.1.5-smartlife.1",
+  "version": "1.2.0-smartlife.1",
   "description": "Homebridge plugin for Tuya/Smart Life devices using the Smart Life device sharing API (fork of @milo526/homebridge-tuya-web with Smart Life QR-code auth)",
   "main": "dist/src/index.js",
   "scripts": {
@@ -41,7 +41,8 @@
   "dependencies": {
     "axios": "^1.13.6",
     "lodash.debounce": "^4.0.8",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "tuyapi": "^7.7.1"
   },
   "devDependencies": {
     "@types/lodash.debounce": "^4.0.7",

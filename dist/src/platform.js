@@ -7,6 +7,7 @@ const errors_1 = require("./errors");
 const DeviceList_1 = require("./helpers/DeviceList");
 const response_1 = require("./api/response");
 const service_1 = require("./api/service");
+const lanService_1 = require("./api/lanService");
 const GarageDoorAccessory_1 = require("./accessories/GarageDoorAccessory");
 const TemperatureSensorAccessory_1 = require("./accessories/TemperatureSensorAccessory");
 const WindowAccessory_1 = require("./accessories/WindowAccessory");
@@ -22,16 +23,35 @@ class TuyaWebPlatform {
         this.log.debug("Finished initializing platform:", this.config.name);
         if (!config || !config.options) {
             this.log.info("No options found in configuration file, disabling plugin.");
+            this.localOnly = false;
             return;
         }
         const options = config.options;
-        if (options.userCode === undefined) {
-            this.log.error("Missing required config parameter: userCode. " +
-                "Get your User Code from the Smart Life app: Me → Profile → Get User Code.");
-            return;
-        }
+        this.localOnly = options.localOnly === true;
         this.pollingInterval = config.options.pollingInterval;
-        this.tuyaWebApi = new service_1.TuyaWebApi(options.userCode, api.user.storagePath(), this.log);
+        if (this.localOnly) {
+            if (!Array.isArray(config.devices) || config.devices.length === 0) {
+                this.log.error("localOnly mode requires a non-empty `devices` array. " +
+                    "Each entry needs id, local_key, ip, and optionally name + device_type.");
+                return;
+            }
+            const invalid = config.devices.filter((d) => !(d === null || d === void 0 ? void 0 : d.id) || !(d === null || d === void 0 ? void 0 : d.local_key));
+            if (invalid.length > 0) {
+                this.log.error("Each `devices` entry must have id and local_key. Invalid entries: %s", JSON.stringify(invalid));
+                return;
+            }
+            this.log.info("Starting in LAN-only mode (no cloud access). Managing %d device(s).", config.devices.length);
+            this.tuyaWebApi = new lanService_1.LanTuyaWebApi(config.devices, this.log);
+        }
+        else {
+            if (options.userCode === undefined) {
+                this.log.error("Missing required config parameter: userCode. " +
+                    "Get your User Code from the Smart Life app: Me → Profile → Get User Code. " +
+                    "Alternatively, enable `localOnly` and configure devices manually.");
+                return;
+            }
+            this.tuyaWebApi = new service_1.TuyaWebApi(options.userCode, api.user.storagePath(), this.log);
+        }
         this.api.on("didFinishLaunching", () => {
             void this.postLaunchSetup.bind(this)();
         });
