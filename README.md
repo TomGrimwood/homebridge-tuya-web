@@ -33,24 +33,209 @@ This plugin implements the following features:
 - Uses simple and lightweight Cloud Web API to control and get state update from Tuya devices. You will need a stable internet connection to control the devices.
 - Device State Caching. State of devices is cached in memory, every time a HomeKit app request status updates from the devices this results in a very fast and responsive response. There can be a latency in updates when a device is controlled from an App/Hub/Controller other than HomeKit, e.g. from the Tuya Android/iOS App.
 
+## What's different in this fork
+
+This is a fork of [`@milo526/homebridge-tuya-web`](https://github.com/milo526/homebridge-tuya-web) brought up to date with the new Tuya Smart Life Sharing API (the legacy `homeassistant/auth.do` API used by the upstream package has been switched off by Tuya). On top of that, this fork adds:
+
+- **LAN-only mode** — the plugin can run with zero cloud access at runtime; the Tuya cloud is only contacted once when you first need to obtain each device's `local_key`. After that, the Tuya account can be deleted and the device firewalled off from the internet at your router.
+- **`tuya-discover` CLI** — a standalone helper that walks every device on your Smart Life account in a single command and prints a ready-to-paste Homebridge config snippet for LAN-only mode.
+- **Fixes inherited from PR [milo526#658](https://github.com/milo526/homebridge-tuya-web/pull/658)** — QR-code pairing with the Smart Life app, V1↔V2 brightness/color range translation, plus a fix for HomeKit "No Response" errors when the cloud returns missing/zero brightness fields.
+
+The Homebridge platform name (`TuyaWebPlatform`) is unchanged, so existing `config.json` entries continue to load.
+
 ## Installation
 
-```
-npm i -g homebridge-tuya-web-smartlife
+### Quickest: install from the release branch of this fork
+
+The release branch ships pre-built JavaScript, so `npm install` works without any compilation step. Run this on your Homebridge host:
+
+```bash
+cd /var/lib/homebridge
+npm install 'https://github.com/TomGrimwood/homebridge-tuya-web.git#release'
 ```
 
-> **LAN-only mode (recommended).** This fork supports a `localOnly` mode that
-> never contacts Tuya's cloud at runtime. After a one-time cloud login to grab
-> each device's local_key you can isolate the devices from the internet at
-> your router and the plugin keeps working entirely on your LAN.
+…then restart Homebridge.
+
+Updates later are just:
+
+```bash
+cd /var/lib/homebridge
+npm update homebridge-tuya-web-smartlife
+```
+
+> The package is named `homebridge-tuya-web-smartlife` rather than `@milo526/homebridge-tuya-web` on purpose — Homebridge's auto-update otherwise reverts the install back to the stale (broken) registry version.
+
+### Alternative: Homebridge UI
+
+The Homebridge UI's **"Install from GitHub"** path doesn't currently build TypeScript on install, so it lands a broken copy. Use the `npm install` command above instead. After installation the **Settings** UI of the plugin works normally and exposes the LAN-only toggle.
+
+## Discovering devices (`tuya-discover`)
+
+`tuya-discover` is a standalone CLI shipped with the plugin. It logs in once via Smart Life QR-code pairing, walks every home and every device on your account, and prints both a human-readable summary and a ready-to-paste config snippet.
+
+### Where to get your User Code first
+
+Smart Life app → **Me** → **Settings** → **Account and Security** → **User Code**. It's typically 7 characters, e.g. `BxtZoOm`.
+
+### Run it on the Homebridge box
+
+```bash
+npx tuya-discover                   # prompts for your User Code
+npx tuya-discover -c BxtZoOm        # passes User Code on the command line
+npx tuya-discover --json            # machine-readable output (for scripting)
+npx tuya-discover --help
+```
+
+### Run it on any Linux PC (no Homebridge needed)
+
+You don't need Homebridge installed to use the discovery tool. Pick one of:
+
+**Option 1 — one-shot via `npx` (no install)**
+
+```bash
+npx -y -p 'github:TomGrimwood/homebridge-tuya-web#release' tuya-discover -c BxtZoOm
+```
+
+`npx` fetches the release branch into its cache (~3s the first time) and runs the CLI from it. Re-running uses the cache.
+
+**Option 2 — persistent global install**
+
+```bash
+npm install -g 'github:TomGrimwood/homebridge-tuya-web#release'
+tuya-discover -c BxtZoOm
+```
+
+If `npm install -g` hits `EACCES`, either use `sudo` or configure a per-user prefix:
+
+```bash
+npm config set prefix ~/.npm-global
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+npm install -g 'github:TomGrimwood/homebridge-tuya-web#release'
+```
+
+**Option 3 — straight from a git clone**
+
+```bash
+git clone -b release https://github.com/TomGrimwood/homebridge-tuya-web.git
+cd homebridge-tuya-web
+node dist/bin/tuya-discover.js -c BxtZoOm
+```
+
+`dist/` is pre-built and committed on the release branch, so there's no `npm install` step.
+
+### What the output looks like
+
+```
+========================================================================
+  DEVICE SUMMARY
+========================================================================
+
+• Connect 10W Smart White Bulb B22  (My Home)
+    id         eb119c7e19b2e1f2a6gdmp
+    local_key  r<Q*f6pEeR'mPR-s
+    ip         203.211.79.252   ← WAN IP. Find LAN IP from your router DHCP table.
+    category   dj  →  device_type: light
+    online     yes
+
+========================================================================
+  HOMEBRIDGE CONFIG SNIPPET
+========================================================================
+
+{
+  "platform": "TuyaWebPlatform",
+  "name": "TuyaWebPlatform",
+  "options": { "localOnly": true },
+  "devices": [
+    {
+      "name": "Connect 10W Smart White Bulb B22",
+      "id": "eb119c7e19b2e1f2a6gdmp",
+      "local_key": "r<Q*f6pEeR'mPR-s",
+      "ip": "REPLACE_WITH_LAN_IP",
+      "version": "3.3",
+      "device_type": "light"
+    }
+  ],
+  "scenes": false
+}
+```
+
+The IP field needs one manual edit — the cloud only knows your WAN IP, so look up each device's LAN IP in your router's DHCP table and substitute it in. After that, paste the snippet into the `platforms` array of `~/.homebridge/config.json` (or use the Homebridge UI's settings page for the plugin) and restart Homebridge.
+
+> **Tip:** Once you've recorded the `local_key`s, they're stable until the device is factory-reset. You can delete the Tuya/Smart Life account and the plugin will keep working, since LAN mode never re-contacts the cloud.
+
+## Configuration
+
+There are two modes; you can switch between them at any time by editing `config.json` or via the Homebridge UI.
+
+### LAN-only mode (recommended)
+
+No cloud connection at runtime. Each device is configured with its `id`, `local_key` and LAN IP — typically obtained once via `tuya-discover`.
+
+```json
+{
+  "platform": "TuyaWebPlatform",
+  "name": "TuyaWebPlatform",
+  "options": {
+    "localOnly": true
+  },
+  "devices": [
+    {
+      "name": "Lounge bulb",
+      "id": "eb119c7e19b2e1f2a6gdmp",
+      "local_key": "r<Q*f6pEeR'mPR-s",
+      "ip": "192.168.50.231",
+      "version": "3.3",
+      "device_type": "light"
+    },
+    {
+      "name": "Bedroom bulb",
+      "id": "...",
+      "local_key": "...",
+      "ip": "192.168.50.232",
+      "version": "3.3",
+      "device_type": "light"
+    }
+  ]
+}
+```
+
+Per-device fields:
+
+- `id` (required) — Tuya virtual device id, shown by `tuya-discover`.
+- `local_key` (required) — 16-character AES key, shown by `tuya-discover`.
+- `ip` (recommended) — LAN IP of the device. If omitted, the plugin tries UDP discovery, which is unreliable on VLAN-segregated networks.
+- `name` — display name in HomeKit. Defaults to `id`.
+- `version` — Tuya protocol version. Defaults to `"3.3"`, which covers most devices. Some newer firmware uses `"3.4"` or `"3.5"`.
+- `device_type` — `light`, `dimmer`, `switch`, `outlet`, `fan`, `cover`, `window`, `garage`, `climate`, `temperature_sensor`. Defaults to `light`.
+- `dps_map` (advanced) — override the default DPS-number → instruction-code map for unusual firmware. Example: `{ "20": "switch_led", "22": "bright_value_v2" }`.
+
+#### Tip — block the device from the internet
+
+For maximum benefit of LAN-only mode, block each Tuya device's MAC from reaching the WAN at your router. Most consumer routers expose this under **Parental Controls** or **Access Control**. A DHCP static lease (so the LAN IP doesn't change) is also strongly recommended. The plugin will keep working as long as it can reach the device on TCP/6668 over your LAN.
+
+### Cloud mode (legacy)
+
+Uses the Smart Life Sharing API. Requires QR-code pairing on first start (the QR will be printed in the Homebridge log).
+
+```json
+{
+  "platform": "TuyaWebPlatform",
+  "name": "TuyaWebPlatform",
+  "options": {
+    "userCode": "BxtZoOm"
+  }
+}
+```
+
+`options` fields in cloud mode:
+
+- `userCode` (required) — Smart Life User Code. Smart Life app → Me → Settings → Account and Security → User Code.
+- `pollingInterval` (optional) — Seconds between cloud polls. Must be ≥ 600 to avoid rate limits.
+
+> First-time pairing must be done with the **Smart Life** app, not the **Tuya Smart** app — the API rejects the latter.
 >
-> ```bash
-> # Discover your devices & get a ready-to-paste Homebridge config snippet:
-> npx tuya-discover
-> ```
->
-> Then enable **LAN-only mode** in the Homebridge UI settings and paste the
-> printed `devices` array, or edit `config.json` directly.
+> Tokens are cached in `<homebridgeStoragePath>/tuya-sharing-tokens.json` so subsequent restarts don't need a re-scan.
 
 ## Support
 
@@ -66,36 +251,7 @@ You can also get community help in the [Homebridge Discord Server](https://disco
 
 </span>
 
-# Configuration
-
-> :check: The preferred and always up-to-date way to configure this plugin is through the config UI.  
-> For details check [their documentation](https://github.com/oznu/homebridge-config-ui-x#readme).
-
-```json
-{
-  "platform": "TuyaWebPlatform",
-  "name": "TuyaWebPlatform",
-  "options": {
-    "username": "xxxx@gmail.com",
-    "password": "xxxxxxxxxx",
-    "countryCode": "xx",
-    "platform": "tuya"
-  }
-}
-```
-
-The `options` has these properties:
-
-- `username` Required. The username for the account that is registered in the Android/iOS App. _Due to a bug in the API the `username` can't contain dots_.
-- `password` Required. The password for the account that is registered in the Android/iOS App.
-- `countryCode` Required. Your account [country code](https://www.countrycode.org/), e.g., 1 for the USA or 86 for China.
-- `platform` Optional. The App where you registered your account. `tuya` for Tuya Smart, `smart_life` for Smart Life, `jinvoo_smart` for Jinvoo Smart. Defaults to `tuya`. Also see _Platform_ section, below.
-- `pollingInterval` Optional. Defaults to empty, which entails no polling. The frequency in **seconds** that the plugin polls the cloud to get device updates. When you exclusively control the devices through the plugin, you can set this to a low frequency (high interval number, e.g. 1800 = 30 minutes).
-
-> :warning: Sign-in with Apple, Google, Facebook or any other provider is **not** supported and, due to limitations, will probably never be supported :warning:  
-> Please make sure your account is created using a plain old username and password combination.
-
-All option outlines below are optional, they are useful to provide finer control on the working of the plugin.
+# Advanced configuration
 
 ## Overruling Device Types
 
@@ -204,20 +360,9 @@ There is currently support for the following device types within this plugin:
 
 # How to check whether the API this library uses can control your device?
 
-- Copy [this script](https://github.com/milo526/homebridge-tuya-web/blob/master/tools/debug_discovery.py) to your PC with Python
-  installed or to https://repl.it/
-- Set/update config inside and run it
-- Check if your devices are listed
-  - If they are - open an issue and provide the output
-  - If they are not - don't open an issue. Ask [Tuya support](mailto:support@tuya.com) to support your device in their
-    `/homeassistant` API
-- Remove the updated script, so your credentials won't leak
+Run `tuya-discover` (see [_Discovering devices_](#discovering-devices-tuya-discover) above). If a device shows up in its output with a `local_key`, this plugin can drive it — either via LAN-only mode (recommended) or cloud mode.
 
-# Determining platform for branded devices
-
-The Tuya cloud supports different branded platforms. If your devices came with a branded app, then it is likely that your username and password are not recognized by the Tuya platform. If the app that came with your devices is not for one of the supported platforms (_tuya_, _smart_life_ or _jinvoo_smart_) your best bet is to check which of the apps for the supported platforms recognizes your devices. Unregister your device from the branded app (so that they are "factory clean" again) and then try re-registering them in the app for one of the supported platforms.
-
-The device checking script above can help you to debug this.
+If a device does **not** appear, check that it's been added to the **Smart Life** app (not the Tuya Smart app or any vendor-branded variant). Branded apps typically register devices against a separate sandbox that the Smart Life sharing API can't see; factory-reset the device and pair it via Smart Life instead.
 
 # Additional Resources
 
